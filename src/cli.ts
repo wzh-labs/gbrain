@@ -1,5 +1,8 @@
 #!/usr/bin/env bun
 
+import { installSigchldHandler } from './core/zombie-reap.ts';
+installSigchldHandler();
+
 import { readFileSync } from 'fs';
 import { loadConfig, toEngineConfig } from './core/config.ts';
 import type { BrainEngine } from './core/engine.ts';
@@ -19,7 +22,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'storage', 'repos', 'code-def', 'code-refs', 'reindex-code', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror']);
+const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex-code', 'code-callers', 'code-callees', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror']);
 
 async function main() {
   // Parse global flags (--quiet / --progress-json / --progress-interval)
@@ -288,6 +291,12 @@ async function handleCliOnly(command: string, args: string[]) {
   if (command === 'integrations') {
     const { runIntegrations } = await import('./commands/integrations.ts');
     await runIntegrations(args);
+    return;
+  }
+  if (command === 'providers') {
+    const { runProviders } = await import('./commands/providers.ts');
+    const [sub, ...rest] = args;
+    await runProviders(sub, rest);
     return;
   }
   if (command === 'auth') {
@@ -620,6 +629,30 @@ async function connectEngine(): Promise<BrainEngine> {
     console.error('No brain configured. Run: gbrain init');
     process.exit(1);
   }
+
+  // Configure the AI gateway BEFORE engine connect — initSchema needs embedding dims.
+  // Env is read once here; the gateway never reads process.env at call time (Codex C3).
+  // For provider keys covered by the secrets resolver (Keychain / pass / op), we
+  // overlay the resolved value on the snapshot so the gateway sees it without ever
+  // touching process.env. Resolved values stay in module-private memory and never
+  // inherit into spawned children — children call getSecret() themselves.
+  const { configureGateway } = await import('./core/ai/gateway.ts');
+  const { getSecret } = await import('./core/secrets.ts');
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const name of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GROQ_API_KEY'] as const) {
+    const resolved = getSecret(name);
+    if (resolved !== undefined) env[name] = resolved;
+  }
+  configureGateway({
+    embedding_model: config.embedding_model,
+    embedding_dimensions: config.embedding_dimensions,
+    expansion_model: config.expansion_model,
+    chat_model: config.chat_model,
+    chat_fallback_chain: config.chat_fallback_chain,
+    base_urls: config.provider_base_urls,
+    env,
+  });
+
   const { createEngine } = await import('./core/engine-factory.ts');
   const engine = await createEngine(toEngineConfig(config));
   const noRetry = process.argv.includes('--no-retry-connect') ||

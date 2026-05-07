@@ -13,7 +13,6 @@ import type { BrainEngine } from '../engine.ts';
 import { MAX_SEARCH_LIMIT, clampSearchLimit } from '../engine.ts';
 import type { SearchResult, SearchOpts, HybridSearchMeta } from '../types.ts';
 import { embed } from '../embedding.ts';
-import { getSecret } from '../secrets.ts';
 import { dedupResults } from './dedup.ts';
 import { autoDetectDetail } from './intent.ts';
 import { expandAnchors, hydrateChunks } from './two-pass.ts';
@@ -112,8 +111,9 @@ export async function hybridSearch(
   // Run keyword search (always available, no API key needed)
   const keywordResults = await engine.searchKeyword(query, searchOpts);
 
-  // Skip vector search entirely if no OpenAI key is configured
-  if (!getSecret('OPENAI_API_KEY')) {
+  // Skip vector search entirely if the gateway has no embedding provider configured (Codex C3).
+  const { isAvailable } = await import('../ai/gateway.ts');
+  if (!isAvailable('embedding')) {
     // Apply backlink boost in keyword-only path too. One getBacklinkCounts query
     // per search request; not N+1.
     if (keywordResults.length > 0) {
