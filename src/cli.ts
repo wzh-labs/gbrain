@@ -632,7 +632,17 @@ async function connectEngine(): Promise<BrainEngine> {
 
   // Configure the AI gateway BEFORE engine connect — initSchema needs embedding dims.
   // Env is read once here; the gateway never reads process.env at call time (Codex C3).
+  // For provider keys covered by the secrets resolver (Keychain / pass / op), we
+  // overlay the resolved value on the snapshot so the gateway sees it without ever
+  // touching process.env. Resolved values stay in module-private memory and never
+  // inherit into spawned children — children call getSecret() themselves.
   const { configureGateway } = await import('./core/ai/gateway.ts');
+  const { getSecret } = await import('./core/secrets.ts');
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const name of ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GROQ_API_KEY'] as const) {
+    const resolved = getSecret(name);
+    if (resolved !== undefined) env[name] = resolved;
+  }
   configureGateway({
     embedding_model: config.embedding_model,
     embedding_dimensions: config.embedding_dimensions,
@@ -640,7 +650,7 @@ async function connectEngine(): Promise<BrainEngine> {
     chat_model: config.chat_model,
     chat_fallback_chain: config.chat_fallback_chain,
     base_urls: config.provider_base_urls,
-    env: { ...process.env },
+    env,
   });
 
   const { createEngine } = await import('./core/engine-factory.ts');
